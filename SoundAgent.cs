@@ -2,30 +2,33 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Media;
 using System.Threading;
+using NAudio.Codecs;
+using NAudio.Wave;
 
 namespace AmbientAgents
 {
     class SoundAgent
     {
         private readonly string _folderPath;
-        private List<string> _wavFiles;
+        private List<string> _audioFiles;
         private readonly string _agentName;
-
-        private readonly int _minMinutes;
-        private readonly int _maxMinutes;
-        private readonly string _mode;
-
+        private readonly Random _rand;
+        private int _minMinutes;
+        private int _maxMinutes;
+        private string _mode;
+        private int _volume; // 0–100
+        private bool _enabled;
         private int _currentIndex = 0;
-        private readonly Random _rand = new Random();
-
-        private int _playlistIndex = 0;
-
+        private int Clamp(int value, int min, int max)
+        {
+            return (value < min) ? min : (value > max) ? max : value;
+        }
         public SoundAgent(string folderPath)
         {
             _folderPath = folderPath;
             _agentName = Path.GetFileName(folderPath);
+            _rand = new Random();
 
             var configPath = Path.Combine(folderPath, "settings.config");
             if (!File.Exists(configPath))
@@ -35,74 +38,74 @@ namespace AmbientAgents
                              .Select(line => line.Trim())
                              .Where(line => !string.IsNullOrEmpty(line) && !line.StartsWith("#"))
                              .Select(line => line.Split('='))
-                             .ToDictionary(kv => kv[0].Trim(), kv => kv[1].Trim());
+                             .ToDictionary(kv => kv[0].Trim().ToLower(), kv => kv[1].Trim());
 
             _minMinutes = config.ContainsKey("min_minutes") ? int.Parse(config["min_minutes"]) : 3;
             _maxMinutes = config.ContainsKey("max_minutes") ? int.Parse(config["max_minutes"]) : 6;
             _mode = config.ContainsKey("mode") ? config["mode"].ToLower() : "random";
+            _volume = config.ContainsKey("volume") ? Clamp(int.Parse(config["volume"]), 0, 100) : 100;
+            _enabled = config.ContainsKey("enabled") ? bool.Parse(config["enabled"]) : true;
 
-            _wavFiles = Directory.GetFiles(folderPath, "*.wav")
-                      .OrderBy(f => f) // Alphabetical order (good for "01.wav", "02.wav", etc.)
-                      .ToList();
+            if (!_enabled)
+            {
+                Console.WriteLine($"[AGENT {_agentName}] Disabled in settings.");
+                return;
+            }
 
-            if (_wavFiles.Count == 0)
-                throw new InvalidOperationException("No .wav files found in agent folder");
+            _audioFiles = Directory.GetFiles(folderPath)
+                .Where(f => f.EndsWith(".wav") || f.EndsWith(".mp3") || f.EndsWith(".ogg"))
+                .OrderBy(f => f)
+                .ToList();
+
+            if (_audioFiles.Count == 0)
+                throw new InvalidOperationException("No supported audio files found in agent folder");
 
             if (_mode == "shuffle")
-                _wavFiles = _wavFiles.OrderBy(x => _rand.Next()).ToList();
+                _audioFiles = _audioFiles.OrderBy(x => _rand.Next()).ToList();
 
-            Console.WriteLine($"[AGENT {_agentName}] Initialized with {_wavFiles.Count} .wav files, mode={_mode}, delay={_minMinutes}-{_maxMinutes} min");
+            Console.WriteLine($"[AGENT {_agentName}] Initialized with {_audioFiles.Count} audio files, mode={_mode}, volume={_volume}%, delay={_minMinutes}-{_maxMinutes} min");
         }
 
         public void RunLoop()
         {
+            if (!_enabled) return;
+
             while (true)
             {
-                int waitMinutes = _rand.Next(_minMinutes, _maxMinutes + 1);
-                for (int i = waitMinutes; i > 0; i--)
-                {
-                    Console.WriteLine($"[AGENT {_agentName}] Next sound in {i} min...");
-                    Thread.Sleep(TimeSpan.FromMinutes(1));
-                }
+                int totalSeconds = _rand.Next(_minMinutes * 60, (_maxMinutes * 60) + 1);
+                Console.WriteLine($"[AGENT {_agentName}] Next sound in {TimeSpan.FromSeconds(totalSeconds):mm\\:ss}...");
+                Thread.Sleep(TimeSpan.FromSeconds(totalSeconds));
 
                 var fileToPlay = SelectNextFile();
-                PlaySound(fileToPlay);
+                if (!string.IsNullOrEmpty(fileToPlay))
+                    PlaySound(fileToPlay);
             }
         }
 
         private string SelectNextFile()
         {
-            if (_wavFiles.Count == 0)
-            {
-                Console.WriteLine($"[AGENT {_agentName}] No audio files found.");
-                return null;
-            }
+            if (_audioFiles.Count == 0) return null;
 
             switch (_mode)
             {
                 case "sequential":
-                    var seqFile = _wavFiles[_currentIndex];
-                    Console.WriteLine($"[AGENT {_agentName}] Sequential index: {_currentIndex}");
-                    _currentIndex = (_currentIndex + 1) % _wavFiles.Count;
+                    var seqFile = _audioFiles[_currentIndex];
+                    _currentIndex = (_currentIndex + 1) % _audioFiles.Count;
                     return seqFile;
 
                 case "shuffle":
-                    var shuffledFile = _wavFiles[_currentIndex];
-                    Console.WriteLine($"[AGENT {_agentName}] Shuffle index: {_currentIndex}");
+                    var shuffleFile = _audioFiles[_currentIndex];
                     _currentIndex++;
-                    if (_currentIndex >= _wavFiles.Count)
+                    if (_currentIndex >= _audioFiles.Count)
                     {
                         _currentIndex = 0;
-                        _wavFiles = _wavFiles.OrderBy(x => _rand.Next()).ToList();
-                        Console.WriteLine($"[AGENT {_agentName}] Shuffle reshuffled playlist");
+                        _audioFiles = _audioFiles.OrderBy(x => _rand.Next()).ToList();
                     }
-                    return shuffledFile;
+                    return shuffleFile;
 
                 case "random":
                 default:
-                    var randFile = _wavFiles[_rand.Next(_wavFiles.Count)];
-                    Console.WriteLine($"[AGENT {_agentName}] Randomly selected: {Path.GetFileName(randFile)}");
-                    return randFile;
+                    return _audioFiles[_rand.Next(_audioFiles.Count)];
             }
         }
 
@@ -111,9 +114,15 @@ namespace AmbientAgents
             try
             {
                 Console.WriteLine($"[AGENT {_agentName}] Playing: {Path.GetFileName(path)}");
-                using (var player = new SoundPlayer(path))
+
+                using var audioFile = new AudioFileReader(path) { Volume = _volume / 100f };
+                using var outputDevice = new WaveOutEvent();
+                outputDevice.Init(audioFile);
+                outputDevice.Play();
+
+                while (outputDevice.PlaybackState == PlaybackState.Playing)
                 {
-                    player.PlaySync();
+                    Thread.Sleep(200);
                 }
             }
             catch (Exception ex)
