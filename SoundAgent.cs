@@ -16,10 +16,14 @@ namespace AmbientAgents
         private readonly Random _rand;
         private int _minMinutes;
         private int _maxMinutes;
+        private int _minSeconds;
+        private int _maxSeconds;
+        private int _overrideStartupSeconds; //optional, if specified will override the delay for the first sound by a random ammount of seconds (up to this value)
         private string _mode;
         private int _volume; // 0–100
         private bool _enabled;
         private int _currentIndex = 0;
+        private int _playCounter = 0;
         private int Clamp(int value, int min, int max)
         {
             return (value < min) ? min : (value > max) ? max : value;
@@ -42,6 +46,9 @@ namespace AmbientAgents
 
             _minMinutes = config.ContainsKey("min_minutes") ? int.Parse(config["min_minutes"]) : 3;
             _maxMinutes = config.ContainsKey("max_minutes") ? int.Parse(config["max_minutes"]) : 6;
+            _minSeconds = config.ContainsKey("min_seconds") ? int.Parse(config["min_seconds"]) : 0;
+            _maxSeconds = config.ContainsKey("max_seconds") ? int.Parse(config["max_seconds"]) : 0;
+            _overrideStartupSeconds = config.ContainsKey("override_startup_seconds") ? int.Parse(config["override_startup_seconds"]) : 0;
             _mode = config.ContainsKey("mode") ? config["mode"].ToLower() : "random";
             _volume = config.ContainsKey("volume") ? Clamp(int.Parse(config["volume"]), 0, 100) : 100;
             _enabled = config.ContainsKey("enabled") ? bool.Parse(config["enabled"]) : true;
@@ -63,7 +70,7 @@ namespace AmbientAgents
             if (_mode == "shuffle")
                 _audioFiles = _audioFiles.OrderBy(x => _rand.Next()).ToList();
 
-            Console.WriteLine($"[AGENT {_agentName}] Initialized with {_audioFiles.Count} audio files, mode={_mode}, volume={_volume}%, delay={_minMinutes}-{_maxMinutes} min");
+            Console.WriteLine($"[AGENT {_agentName}] Initialized with {_audioFiles.Count} audio files, mode={_mode}, volume={_volume}%, delay={_minMinutes}-{_maxMinutes} min + {_minSeconds}-{_maxSeconds} sec");
         }
 
         public void RunLoop()
@@ -72,13 +79,20 @@ namespace AmbientAgents
 
             while (true)
             {
-                int totalSeconds = _rand.Next(_minMinutes * 60, (_maxMinutes * 60) + 1);
+                int totalSeconds;
+                if (_playCounter == 0 && _overrideStartupSeconds > 0 ){
+                    totalSeconds = _rand.Next(0, _overrideStartupSeconds + 1);
+                } else {
+                    totalSeconds = _rand.Next(_minMinutes * 60, (_maxMinutes * 60) + 1) + _rand.Next(_minSeconds, _maxSeconds + 1);        
+                }
                 Console.WriteLine($"[AGENT {_agentName}] Next sound in {TimeSpan.FromSeconds(totalSeconds):mm\\:ss}...");
                 Thread.Sleep(TimeSpan.FromSeconds(totalSeconds));
 
                 var fileToPlay = SelectNextFile();
-                if (!string.IsNullOrEmpty(fileToPlay))
+                if (!string.IsNullOrEmpty(fileToPlay)) {
+                    _playCounter++;
                     PlaySound(fileToPlay);
+                }
             }
         }
 
