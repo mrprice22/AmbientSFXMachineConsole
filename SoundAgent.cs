@@ -34,9 +34,9 @@ namespace AmbientAgents
             _agentName = Path.GetFileName(folderPath);
             _rand = new Random();
 
-            var configPath = Path.Combine(folderPath, "settings.config");
-            if (!File.Exists(configPath))
-                throw new FileNotFoundException("Missing settings.config");
+            var configPath = Directory.GetFiles(folderPath, "*.config").FirstOrDefault();
+            if (configPath == null)
+                throw new FileNotFoundException("No .config file found in the folder.");
 
             var config = File.ReadAllLines(configPath)
                              .Select(line => line.Trim())
