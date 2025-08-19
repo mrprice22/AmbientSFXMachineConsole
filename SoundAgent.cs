@@ -56,6 +56,17 @@ namespace AmbientAgents
         private int _remainingTurboPlays = 0;
         private int _cooldownAfterTurbo = 0; // seconds
 
+
+        //Followup sounds config
+        private List<string> _followupFiles = new List<string>();
+        private string _followupFolder = null;
+        private string _followupMode = "random";
+        private int _followupVolume = 100;
+        private int _followupBalanceMin = 50;
+        private int _followupBalanceMax = 50;
+        private int _followupBalanceInvertChance = 0;
+        private bool _followupEnabledForNormalFiles = false; // optional config
+
         private int Clamp(int value, int min, int max)
         {
             return (value < min) ? min : (value > max) ? max : value;
@@ -122,6 +133,34 @@ namespace AmbientAgents
 
             if (_mode == "shuffle")
                 _audioFiles = _audioFiles.OrderBy(x => _rand.Next()).ToList();
+
+            //Followup sounds config
+            _followupFolder = Path.Combine(_folderPath, "followup");
+            if (Directory.Exists(_followupFolder))
+            {
+                // Load config for followup
+                var followupConfigPath = Directory.GetFiles(_followupFolder, "*.config").FirstOrDefault();
+                if (followupConfigPath != null)
+                {
+                    var followupConfig = File.ReadAllLines(followupConfigPath)
+                                             .Select(line => line.Trim())
+                                             .Where(line => !string.IsNullOrEmpty(line) && !line.StartsWith("#"))
+                                             .Select(line => line.Split('='))
+                                             .ToDictionary(kv => kv[0].Trim().ToLower(), kv => kv[1].Trim());
+
+                    _followupMode = followupConfig.ContainsKey("mode") ? followupConfig["mode"].ToLower() : _followupMode;
+                    _followupVolume = followupConfig.ContainsKey("volume") ? Clamp(int.Parse(followupConfig["volume"]), 0, 100) : _followupVolume;
+                    _followupBalanceMin = followupConfig.ContainsKey("balance_min") ? int.Parse(followupConfig["balance_min"]) : _followupBalanceMin;
+                    _followupBalanceMax = followupConfig.ContainsKey("balance_max") ? int.Parse(followupConfig["balance_max"]) : _followupBalanceMax;
+                    _followupBalanceInvertChance = followupConfig.ContainsKey("balance_invert_chance") ? int.Parse(followupConfig["balance_invert_chance"]) : _followupBalanceInvertChance;
+                    _followupEnabledForNormalFiles = followupConfig.ContainsKey("play_normal_files") ? bool.Parse(followupConfig["play_normal_files"]) : _followupEnabledForNormalFiles;
+                }
+
+                _followupFiles = Directory.GetFiles(_followupFolder)
+                                          .Where(f => f.EndsWith(".wav") || f.EndsWith(".mp3") || f.EndsWith(".ogg"))
+                                          .OrderBy(f => f)
+                                          .ToList();
+            }
 
             Console.WriteLine($"[AGENT {_agentName}] Initialized with {_audioFiles.Count} audio files, mode={_mode}, volume={_volume}%, balance={_balanceMin}-{_balanceMax}, turbo_chance={_turboChance}%");
         }
@@ -272,6 +311,19 @@ namespace AmbientAgents
                         _activeOutputs.Remove(outputDevice);
                     }
                     audioFile.Dispose();
+
+                    // --- Followup logic ---
+                    bool shouldTriggerFollowup = Path.GetFileNameWithoutExtension(path).EndsWith("_followup")
+                                                 || _followupEnabledForNormalFiles;
+
+                    if (shouldTriggerFollowup && _followupFiles.Count > 0)
+                    {
+                        string followupFile = SelectFollowupFile();
+                        if (!string.IsNullOrEmpty(followupFile))
+                        {
+                            PlayFollowup(followupFile); // play immediately after
+                        }
+                    }
                 };
 
                 // Opportunistically clean finished players
@@ -280,6 +332,73 @@ namespace AmbientAgents
             catch (Exception ex)
             {
                 Console.WriteLine($"[AGENT {_agentName}] ERROR playing sound: {ex.Message}");
+            }
+        }
+
+        private string SelectFollowupFile()
+        {
+            if (_followupFiles.Count == 0) return null;
+
+            switch (_followupMode)
+            {
+                case "sequential":
+                    var file = _followupFiles[_currentIndex % _followupFiles.Count];
+                    _currentIndex++;
+                    return file;
+                case "shuffle":
+                    var shuffleFile = _followupFiles[_rand.Next(_followupFiles.Count)];
+                    return shuffleFile;
+                case "random":
+                default:
+                    return _followupFiles[_rand.Next(_followupFiles.Count)];
+            }
+        }
+
+        private void PlayFollowup(string path)
+        {
+            try
+            {
+                Console.WriteLine($"[AGENT {_agentName}] Playing FOLLOWUP: {Path.GetFileName(path)}");
+
+                var audioFile = new AudioFileReader(path) { Volume = _followupVolume / 100f };
+                ISampleProvider sampleProvider;
+
+                if (audioFile.WaveFormat.Channels == 2)
+                    sampleProvider = new StereoToMonoSampleProvider(audioFile);
+                else
+                    sampleProvider = audioFile;
+
+                float balance = (_rand.Next(_followupBalanceMin, _followupBalanceMax + 1) - 50) / 50f;
+                if (_rand.Next(100) < _followupBalanceInvertChance)
+                    balance = -balance;
+
+                var outputDevice = new WaveOutEvent();
+                if (_followupBalanceMin == 50 && _followupBalanceMax == 50)
+                    outputDevice.Init(audioFile);
+                else
+                    outputDevice.Init(new PanningSampleProvider(sampleProvider)
+                    {
+                        Pan = ClampFloat(balance, -1f, 1f)
+                    });
+
+                lock (_lock) { _activeOutputs.Add(outputDevice); }
+                outputDevice.Play();
+
+                outputDevice.PlaybackStopped += (s, e) =>
+                {
+                    lock (_lock)
+                    {
+                        outputDevice.Dispose();
+                        _activeOutputs.Remove(outputDevice);
+                    }
+                    audioFile.Dispose();
+                };
+
+                CleanupFinishedPlayers();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[AGENT {_agentName}] ERROR playing followup: {ex.Message}");
             }
         }
 

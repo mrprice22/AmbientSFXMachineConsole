@@ -29,10 +29,11 @@ namespace AmbientAgents
                 {
                     if (line.StartsWith("appName=", StringComparison.OrdinalIgnoreCase))
                     {
-                        if (line.StartsWith("appName=", StringComparison.OrdinalIgnoreCase))
-                            appName = line.Substring("appName=".Length).Trim();
-                        else if (line.StartsWith("icon=", StringComparison.OrdinalIgnoreCase))
-                            iconPath = Path.Combine(AppContext.BaseDirectory, line.Substring("icon=".Length).Trim());
+                        appName = line.Substring("appName=".Length).Trim();
+                    }
+                    else if (line.StartsWith("icon=", StringComparison.OrdinalIgnoreCase))
+                    {
+                        iconPath = Path.Combine(AppContext.BaseDirectory, line.Substring("icon=".Length).Trim());
                     }
                 }
             }
