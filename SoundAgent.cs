@@ -23,6 +23,26 @@ namespace AmbientAgents
         private int _currentIndex = 0;
         private int _playCounter = 0;
 
+        // At class level:
+        private readonly List<WaveOutEvent> _activeOutputs = new List<WaveOutEvent>();
+        private readonly object _lock = new object();
+
+        // Clean up any finished players periodically
+        private void CleanupFinishedPlayers()
+        {
+            lock (_lock)
+            {
+                for (int i = _activeOutputs.Count - 1; i >= 0; i--)
+                {
+                    if (_activeOutputs[i].PlaybackState != PlaybackState.Playing)
+                    {
+                        _activeOutputs[i].Dispose();
+                        _activeOutputs.RemoveAt(i);
+                    }
+                }
+            }
+        }
+
         // Balance related
         private int _balanceMin = 50;
         private int _balanceMax = 50;
@@ -199,48 +219,63 @@ namespace AmbientAgents
             {
                 Console.WriteLine($"[AGENT {_agentName}] Playing: {Path.GetFileName(path)}");
 
-                // Load the audio file
-                using var audioFile = new AudioFileReader(path) { Volume = _volume / 100f };
-                using var outputDevice = new WaveOutEvent();
+                var audioFile = new AudioFileReader(path) { Volume = _volume / 100f };
+                ISampleProvider sampleProvider;
 
                 // Convert stereo to mono if needed
-                ISampleProvider sampleProvider;
                 if (audioFile.WaveFormat.Channels == 2)
                 {
                     sampleProvider = new StereoToMonoSampleProvider(audioFile);
                 }
                 else
                 {
-                    sampleProvider = audioFile; // Keep stereo if it's already mono
+                    sampleProvider = audioFile; // Keep mono if already mono
                 }
 
-                // Default balance handling (50 means no pan)
+                // Default balance handling
                 float balance = (_rand.Next(_balanceMin, _balanceMax + 1) - 50) / 50f;
-
-                // Invert balance with a chance if required
                 if (_rand.Next(100) < _balanceInvertChance)
                     balance = -balance;
 
-                // If the balance is exactly 0.5 (center), just play stereo without pan
-                if (_balanceMin == 50 && _balanceMax==50)
+                // Create output device
+                var outputDevice = new WaveOutEvent();
+
+                if (_balanceMin == 50 && _balanceMax == 50)
                 {
-                    outputDevice.Init(audioFile); // Stereo (no panning)
+                    // No pan, play raw stereo/mono
+                    outputDevice.Init(audioFile);
                 }
                 else
                 {
-                    // Apply panning if balance is not neutral
-                    var panProvider = new PanningSampleProvider(sampleProvider) { Pan = ClampFloat(balance, -1f, 1f) };
-                    outputDevice.Init(panProvider); // Apply panned audio
+                    // Apply panning
+                    var panProvider = new PanningSampleProvider(sampleProvider)
+                    {
+                        Pan = ClampFloat(balance, -1f, 1f)
+                    };
+                    outputDevice.Init(panProvider);
                 }
 
-                // Play the sound
+                // Track the output device for cleanup
+                lock (_lock)
+                {
+                    _activeOutputs.Add(outputDevice);
+                }
+
                 outputDevice.Play();
 
-                // Wait for playback to finish
-                while (outputDevice.PlaybackState == PlaybackState.Playing)
+                // When finished, dispose this one
+                outputDevice.PlaybackStopped += (s, e) =>
                 {
-                    Thread.Sleep(200);
-                }
+                    lock (_lock)
+                    {
+                        outputDevice.Dispose();
+                        _activeOutputs.Remove(outputDevice);
+                    }
+                    audioFile.Dispose();
+                };
+
+                // Opportunistically clean finished players
+                CleanupFinishedPlayers();
             }
             catch (Exception ex)
             {
