@@ -22,6 +22,8 @@ namespace AmbientAgents
         private bool _enabled;
         private int _currentIndex = 0;
         private int _playCounter = 0;
+        private bool startupDelayUsed = false;
+
 
         private readonly List<WaveOutEvent> _activeOutputs = new List<WaveOutEvent>();
         private readonly object _lock = new object();
@@ -137,7 +139,7 @@ namespace AmbientAgents
                 var fileToPlay = SelectNextFile();
                 if (string.IsNullOrEmpty(fileToPlay)) continue;
 
-                _playCounter++;
+            
                 _playbackDone.Reset();
                 PlaySound(fileToPlay);
 
@@ -166,6 +168,7 @@ namespace AmbientAgents
                          _rand.Next(_minSeconds, _maxSeconds + 1)) * 1000;
                 }
 
+                _playCounter++;
                 Console.WriteLine($"[AGENT {_agentName}] Waiting {TimeSpan.FromMilliseconds(totalMilliseconds):mm\\:ss} until next play...");
                 Thread.Sleep(totalMilliseconds);
 
