@@ -2,11 +2,9 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Media;
-using System.Threading;
 using System.Threading.Tasks;
-using System.Windows.Forms; //for making a blank window to control name of program in volume mixer or alt+tab in windows
-using System.Drawing; //for the icon display 
+using System.Windows.Forms; // Hidden window for app name in mixer/Alt+Tab
+using System.Drawing;       // Icon for window
 
 namespace AmbientAgents
 {
@@ -14,19 +12,22 @@ namespace AmbientAgents
     {
         static readonly string BaseSoundFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "snd");
 
-        
         [STAThread]
         static void Main(string[] args)
         {
-            // Read appName from config
+            // --- Load Config ---
             string appName = "Default Sound Agent";
             string iconPath = Path.Combine(AppContext.BaseDirectory, "agent.ico");
-
             string configPath = Path.Combine(AppContext.BaseDirectory, "appSettings.config");
+
             if (File.Exists(configPath))
             {
-                foreach (var line in File.ReadAllLines(configPath))
+                foreach (var rawLine in File.ReadAllLines(configPath))
                 {
+                    var line = rawLine.Trim();
+                    if (string.IsNullOrWhiteSpace(line) || line.StartsWith("#"))
+                        continue;
+
                     if (line.StartsWith("appName=", StringComparison.OrdinalIgnoreCase))
                     {
                         appName = line.Substring("appName=".Length).Trim();
@@ -38,31 +39,44 @@ namespace AmbientAgents
                 }
             }
 
-            // Create hidden window for audio session naming
-            var form = new Form();
-            form.Text = appName;
-            form.ShowInTaskbar = false;
-            form.Opacity = 0;
+            // --- Setup hidden window for volume mixer session naming ---
+            var form = new Form
+            {
+                Text = appName,
+                ShowInTaskbar = false,
+                Opacity = 0
+            };
+
             if (File.Exists(iconPath))
-                form.Icon = new Icon(iconPath);
+            {
+                try
+                {
+                    form.Icon = new Icon(iconPath);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[WARN] Could not load icon '{iconPath}': {ex.Message}");
+                }
+            }
 
             form.Load += (s, e) => form.Hide();
 
-            // Start the hidden form in a new thread
-            System.Threading.Thread t = new System.Threading.Thread(() =>
+            var uiThread = new System.Threading.Thread(() =>
             {
                 Application.Run(form);
-            });
-            t.IsBackground = true;
-            t.SetApartmentState(System.Threading.ApartmentState.STA);
-            t.Start();
+            })
+            {
+                IsBackground = true
+            };
+            uiThread.SetApartmentState(System.Threading.ApartmentState.STA);
+            uiThread.Start();
 
             Console.WriteLine($"[INFO] App running as '{appName}' in volume mixer.");
-            
-            // ...initialize agents, play sounds, etc.
+
+            // --- Load and start agents ---
             if (!Directory.Exists(BaseSoundFolder))
             {
-                Console.WriteLine($"Sound folder not found: {BaseSoundFolder}");
+                Console.WriteLine($"[ERROR] Sound folder not found: {BaseSoundFolder}");
                 return;
             }
 
@@ -70,12 +84,18 @@ namespace AmbientAgents
 
             var agentDirs = Directory.GetDirectories(BaseSoundFolder);
 
+            if (agentDirs.Length == 0)
+            {
+                Console.WriteLine($"[WARN] No agent folders found in {BaseSoundFolder}.");
+            }
+
             foreach (var dir in agentDirs)
             {
                 try
                 {
                     var agent = new SoundAgent(dir);
                     Task.Run(() => agent.RunLoop());
+                    Console.WriteLine($"[OK] Started agent in {Path.GetFileName(dir)}");
                 }
                 catch (Exception ex)
                 {
@@ -83,7 +103,7 @@ namespace AmbientAgents
                 }
             }
 
-            Console.WriteLine("Press Enter to exit...");
+            Console.WriteLine("[READY] All agents initialized. Press Enter to exit...");
             Console.ReadLine();
         }
     }
